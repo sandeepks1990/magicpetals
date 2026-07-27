@@ -213,7 +213,9 @@ function showShopQRCode() {
 
   if (!qrGenerated && container) {
     container.innerHTML = '';
-    const targetUrl = window.location.origin + '/';
+    const targetUrl = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+      ? 'https://magicpetals.onrender.com/'
+      : (window.location.origin + '/');
     new QRCode(container, {
       text: targetUrl,
       width: 220,

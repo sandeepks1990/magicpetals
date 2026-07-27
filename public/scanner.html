@@ -56,7 +56,11 @@
       const qrContainer = document.getElementById('shop-front-qrcode');
       if (qrContainer) {
         qrContainer.innerHTML = '';
-        const targetUrl = window.location.origin + '/';
+        // Always target the live host name https://magicpetals.onrender.com/
+        const targetUrl = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+          ? 'https://magicpetals.onrender.com/'
+          : (window.location.origin + '/');
+
         new QRCode(qrContainer, {
           text: targetUrl,
           width: 240,
