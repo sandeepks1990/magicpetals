@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Magic Petals - Scan Here</title>
+  <!-- Google Fonts & Font Awesome Icons -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link rel="stylesheet" href="/css/style.css">
+  <!-- QRCode CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+</head>
+<body style="display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 1.5rem;">
+
+  <div class="container container-narrow" style="margin: auto;">
+    
+    <!-- Minimal Card Display -->
+    <main class="card" style="text-align: center; padding: 3rem 2rem; border-radius: 28px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.15);">
+      
+      <!-- Puppy Icon Header -->
+      <div style="margin-bottom: 0.75rem;">
+        <img src="/images/puppy_logo.jpg" alt="Cute Puppy Icon" style="width: 100px; height: 100px; border-radius: 50%; box-shadow: 0 8px 20px rgba(124, 58, 237, 0.2); border: 4px solid #ffffff; object-fit: cover;">
+      </div>
+
+      <div style="font-size: 2.5rem; font-weight: 800; background: linear-gradient(135deg, #6d28d9 0%, #ec4899 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 0.25rem;">
+        Magic Petals
+      </div>
+      <p style="color: var(--text-muted); font-size: 1.05rem; font-weight: 500; margin-bottom: 1.75rem;">
+        Pets Food & Quality Stationery Store
+      </p>
+
+      <!-- Large QR Code -->
+      <div style="background: #ffffff; display: inline-block; padding: 1.5rem; border: 3.5px dashed var(--primary); border-radius: 24px; margin-bottom: 1.75rem; box-shadow: 0 15px 30px rgba(124, 58, 237, 0.12);">
+        <div id="shop-front-qrcode"></div>
+      </div>
+
+      <!-- Scan Message -->
+      <div style="background: rgba(124, 58, 237, 0.08); padding: 1.25rem 1.5rem; border-radius: 16px; border: 1px solid rgba(124, 58, 237, 0.15);">
+        <h2 style="font-size: 1.3rem; font-weight: 700; color: var(--primary); margin-bottom: 0.35rem; display: flex; align-items: center; justify-content: center; gap: 0.5rem;">
+          <i class="fa-solid fa-dog"></i> Scan Here to Touch Base With Us!
+        </h2>
+        <p style="color: var(--text-main); font-size: 0.95rem; font-weight: 500;">
+          Scan using your mobile phone camera to fill in your details & get in touch!
+        </p>
+      </div>
+
+    </main>
+
+  </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const qrContainer = document.getElementById('shop-front-qrcode');
+      if (qrContainer) {
+        qrContainer.innerHTML = '';
+        const targetUrl = window.location.origin + '/';
+        new QRCode(qrContainer, {
+          text: targetUrl,
+          width: 240,
+          height: 240,
+          colorDark: "#7c3aed",
+          colorLight: "#ffffff",
+          correctLevel: QRCode.CorrectLevel.H
+        });
+      }
+    });
+  </script>
+</body>
+</html>

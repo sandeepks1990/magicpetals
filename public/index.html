@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Magic Petals - Customer Form</title>
+  <!-- Google Fonts & Font Awesome Icons -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+
+  <div class="container container-narrow">
+    <!-- Navbar -->
+    <nav class="nav-bar">
+      <a href="/" class="nav-logo">
+        <img src="/images/puppy_logo.jpg" alt="Puppy Icon" style="width: 32px; height: 32px; border-radius: 50%; object-fit: cover;"> Magic Petals
+      </a>
+      <div class="nav-links">
+        <a href="/scanner" class="nav-link"><i class="fa-solid fa-qrcode"></i> QR Scanner</a>
+        <a href="/admin" class="nav-link"><i class="fa-solid fa-user-lock"></i> Admin</a>
+      </div>
+    </nav>
+
+    <!-- Header Banner -->
+    <header class="brand-header">
+      <div style="margin-bottom: 0.5rem;">
+        <img src="/images/puppy_logo.jpg" alt="Cute Puppy Icon" style="width: 80px; height: 80px; border-radius: 50%; box-shadow: 0 8px 16px rgba(124, 58, 237, 0.2); border: 3px solid #ffffff; object-fit: cover;">
+      </div>
+      <div class="brand-badge">
+        <i class="fa-solid fa-paw"></i> Pets Food & Stationery Store
+      </div>
+      <h1 class="brand-title">Magic Petals</h1>
+      <p class="brand-subtitle">Please enter your details below</p>
+    </header>
+
+    <!-- Customer Form Card -->
+    <main class="card" id="form-card">
+      <div id="alert-container"></div>
+
+      <form id="customer-form">
+        <!-- Name -->
+        <div class="form-group">
+          <label for="name" class="form-label">
+            <i class="fa-solid fa-user" style="color: var(--primary);"></i> Full Name *
+          </label>
+          <input type="text" id="name" name="name" class="form-input" placeholder="Enter Full Name" required autocomplete="name">
+        </div>
+
+        <!-- Phone Number -->
+        <div class="form-group">
+          <label for="phone" class="form-label">
+            <i class="fa-solid fa-phone" style="color: var(--accent-pink);"></i> Phone Number *
+          </label>
+          <input type="tel" id="phone" name="phone" class="form-input" placeholder="Enter Phone Number" required autocomplete="tel">
+        </div>
+
+        <!-- Feedback / Message -->
+        <div class="form-group">
+          <label for="feedback" class="form-label">
+            <i class="fa-solid fa-comment-dots" style="color: var(--accent-teal);"></i> Feedback / Message
+            <span class="optional">(Optional)</span>
+          </label>
+          <textarea id="feedback" name="feedback" class="form-textarea" placeholder="Enter feedback or message"></textarea>
+        </div>
+
+        <!-- Submit Button -->
+        <button type="submit" class="btn" id="submit-btn">
+          <span>Submit Details</span>
+          <i class="fa-solid fa-paper-plane"></i>
+        </button>
+      </form>
+    </main>
+
+    <!-- Success Screen (Hidden initially) -->
+    <div class="card success-card" id="success-card" style="display: none;">
+      <div class="success-icon">
+        <i class="fa-solid fa-check"></i>
+      </div>
+      <h2 style="font-size: 1.75rem; font-weight: 800; margin-bottom: 0.5rem; color: var(--text-main);">
+        Thank You!
+      </h2>
+      <p style="color: var(--text-muted); margin-bottom: 1.5rem;">
+        Your details have been saved successfully to <strong>Magic Petals</strong>!
+      </p>
+      <button class="btn btn-secondary" onclick="resetForm()">
+        <i class="fa-solid fa-rotate-right"></i> Submit Another Entry
+      </button>
+    </div>
+
+    <!-- Footer -->
+    <footer>
+      <p>&copy; 2026 <strong>Magic Petals</strong>. All rights reserved.</p>
+    </footer>
+  </div>
+
+  <script src="/js/main.js"></script>
+</body>
+</html>

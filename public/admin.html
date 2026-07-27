@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin Dashboard - Magic Petals</title>
+  <!-- Google Fonts & Font Awesome Icons -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link rel="stylesheet" href="/css/style.css">
+  <!-- QRCode CDN for printable shop QR generation -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+</head>
+<body>
+
+  <div class="container">
+    <!-- Navbar -->
+    <nav class="nav-bar">
+      <a href="/" class="nav-logo">
+        <img src="/images/puppy_logo.jpg" alt="Puppy Icon" style="width: 32px; height: 32px; border-radius: 50%; object-fit: cover;"> Magic Petals <span style="font-size: 0.75rem; background: #e0e7ff; color: #4338ca; padding: 0.2rem 0.6rem; border-radius: 999px; font-weight: 700;">ADMIN</span>
+      </a>
+      <div class="nav-links">
+        <a href="/" class="nav-link"><i class="fa-solid fa-store"></i> Shop Form</a>
+        <a href="/scanner" class="nav-link"><i class="fa-solid fa-qrcode"></i> QR Scanner</a>
+        <button id="logout-btn" class="nav-link" style="display: none; background: none; border: none; cursor: pointer; color: #ef4444;">
+          <i class="fa-solid fa-right-from-bracket"></i> Logout
+        </button>
+      </div>
+    </nav>
+
+    <!-- ADMIN LOGIN SCREEN -->
+    <div id="login-view" class="card container-narrow" style="margin: 2rem auto;">
+      <div style="text-align: center; margin-bottom: 1.5rem;">
+        <img src="/images/puppy_logo.jpg" alt="Puppy Icon" style="width: 70px; height: 70px; border-radius: 50%; box-shadow: 0 6px 16px rgba(124, 58, 237, 0.2); margin-bottom: 0.75rem; object-fit: cover;">
+        <div class="brand-badge" style="background: rgba(124, 58, 237, 0.1); color: var(--primary);">
+          <i class="fa-solid fa-lock"></i> Restricted Access
+        </div>
+        <h2 style="font-size: 1.75rem; font-weight: 800; color: var(--text-main);">Admin Login</h2>
+        <p style="color: var(--text-muted); font-size: 0.9rem;">Log in to access customer submissions and export data</p>
+      </div>
+
+      <div id="login-alert"></div>
+
+      <form id="admin-login-form">
+        <div class="form-group">
+          <label for="username" class="form-label">Username / Email</label>
+          <input type="email" id="username" class="form-input" placeholder="Enter Username / Email" required autocomplete="username">
+        </div>
+
+        <div class="form-group">
+          <label for="password" class="form-label">Password</label>
+          <input type="password" id="password" class="form-input" placeholder="Enter Password" required autocomplete="current-password">
+        </div>
+
+        <button type="submit" class="btn" id="login-btn">
+          <span>Log In to Dashboard</span>
+          <i class="fa-solid fa-arrow-right-to-bracket"></i>
+        </button>
+      </form>
+    </div>
+
+    <!-- ADMIN DASHBOARD PANEL -->
+    <div id="dashboard-view" style="display: none;">
+      
+      <!-- Stats Overview -->
+      <div class="admin-stats">
+        <div class="stat-card">
+          <div class="stat-icon purple">
+            <i class="fa-solid fa-users"></i>
+          </div>
+          <div>
+            <div class="stat-value" id="stat-total">0</div>
+            <div class="stat-label">Total Submissions</div>
+          </div>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-icon teal">
+            <i class="fa-solid fa-calendar-day"></i>
+          </div>
+          <div>
+            <div class="stat-value" id="stat-today">0</div>
+            <div class="stat-label">Submissions Today</div>
+          </div>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-icon pink">
+            <i class="fa-solid fa-dog"></i>
+          </div>
+          <div>
+            <div class="stat-value">Magic Petals</div>
+            <div class="stat-label">Pets Food & Stationery</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Actions & Search Controls -->
+      <div class="controls-bar">
+        <div class="search-box">
+          <i class="fa-solid fa-magnifying-glass search-icon"></i>
+          <input type="text" id="search-input" class="search-input" placeholder="Search by name, phone or message...">
+        </div>
+
+        <div class="action-group">
+          <button class="btn btn-secondary btn-sm" onclick="showShopQRCode()">
+            <i class="fa-solid fa-qrcode" style="color: var(--primary);"></i> Counter QR Code
+          </button>
+          
+          <button class="btn btn-success btn-sm" onclick="downloadCSV()">
+            <i class="fa-solid fa-file-csv"></i> Download Details (CSV)
+          </button>
+
+          <button class="btn btn-secondary btn-sm" onclick="fetchSubmissions()">
+            <i class="fa-solid fa-arrows-rotate"></i> Refresh
+          </button>
+        </div>
+      </div>
+
+      <!-- Data Table -->
+      <div class="table-responsive">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Customer Name</th>
+              <th>Phone Number</th>
+              <th>Feedback / Message</th>
+              <th>Submission Date</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="submissions-table-body">
+            <tr>
+              <td colspan="6" class="empty-state">
+                <i class="fa-solid fa-spinner fa-spin" style="font-size: 1.5rem; color: var(--primary);"></i>
+                <p style="margin-top: 0.5rem;">Loading customer records...</p>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+    </div>
+
+  </div>
+
+  <!-- QR CODE MODAL FOR SHOP FRONT -->
+  <div class="qr-modal" id="qr-modal">
+    <div class="qr-card">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;" class="no-print">
+        <span class="brand-badge"><i class="fa-solid fa-store"></i> Shop Counter QR Code</span>
+        <button onclick="closeShopQRCode()" style="background: none; border: none; font-size: 1.25rem; cursor: pointer; color: var(--text-muted);">&times;</button>
+      </div>
+
+      <img src="/images/puppy_logo.jpg" alt="Puppy Icon" style="width: 60px; height: 60px; border-radius: 50%; margin-bottom: 0.5rem; object-fit: cover;">
+      <h3 style="font-size: 1.5rem; font-weight: 800; color: var(--text-main); margin-bottom: 0.25rem;">
+        Magic Petals
+      </h3>
+      <p style="font-size: 0.875rem; color: var(--text-muted);">
+        Scan with your mobile phone camera to submit Name, Phone & Feedback!
+      </p>
+
+      <div id="qrcode-container" style="margin: 1.25rem 0;"></div>
+
+      <div style="display: flex; gap: 0.75rem; margin-top: 1rem;" class="no-print">
+        <button class="btn btn-secondary" onclick="window.print()">
+          <i class="fa-solid fa-print"></i> Print Counter Sign
+        </button>
+        <button class="btn" onclick="closeShopQRCode()">
+          Close
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <footer style="margin-top: 3rem;">
+    <p>&copy; 2026 <strong>Magic Petals Admin Console</strong></p>
+  </footer>
+
+  <script src="/js/admin.js"></script>
+</body>
+</html>
