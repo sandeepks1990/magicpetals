@@ -8,7 +8,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'magic_petals_secure_secret_1990';
 
-// Hardcoded Admin Credentials as requested
+// Hardcoded Admin Credentials
 const ADMIN_USER = 'thoma@magicpetals.com';
 const ADMIN_PASS = 'Thoma@1990';
 
@@ -19,21 +19,27 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // -------------------------------------------------------------
-// DATABASE DUAL ADAPTER (PostgreSQL on Render OR SQLite local/persistent)
+// TRIPLE DATABASE ADAPTER (JSONBin Cloud JSON, PostgreSQL, SQLite)
 // -------------------------------------------------------------
-let usePostgres = !!process.env.DATABASE_URL;
+const JSONBIN_MASTER_KEY = process.env.JSONBIN_MASTER_KEY;
+let JSONBIN_BIN_ID = process.env.JSONBIN_BIN_ID;
+const DATABASE_URL = process.env.DATABASE_URL;
+
+let storageMode = 'sqlite';
 let pgPool = null;
 let sqliteDb = null;
 
-if (usePostgres) {
-  console.log('🐘 Connecting to PostgreSQL database...');
+if (JSONBIN_MASTER_KEY) {
+  storageMode = 'jsonbin';
+  console.log('☁️ Storage Engine: JSONBin.io Cloud JSON');
+} else if (DATABASE_URL) {
+  storageMode = 'postgres';
+  console.log('🐘 Storage Engine: PostgreSQL');
   const { Pool } = require('pg');
   pgPool = new Pool({
-    connectionString: process.env.DATABASE_URL,
+    connectionString: DATABASE_URL,
     ssl: { rejectUnauthorized: false }
   });
-
-  // Init Postgres Table
   pgPool.query(`
     CREATE TABLE IF NOT EXISTS submissions (
       id SERIAL PRIMARY KEY,
@@ -42,19 +48,14 @@ if (usePostgres) {
       feedback TEXT,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
-  `).then(() => console.log('PostgreSQL database initialized successfully.'))
-    .catch(err => console.error('PostgreSQL init error:', err));
+  `).catch(err => console.error('Postgres init error:', err));
 } else {
-  console.log('📁 Connecting to SQLite database...');
+  storageMode = 'sqlite';
+  console.log('📁 Storage Engine: Local SQLite');
   const Database = require('better-sqlite3');
   const dbPath = process.env.DB_PATH || path.join(__dirname, 'database.db');
-  
-  // Ensure directory exists if custom path provided
   const dbDir = path.dirname(dbPath);
-  if (!fs.existsSync(dbDir)) {
-    fs.mkdirSync(dbDir, { recursive: true });
-  }
-
+  if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
   sqliteDb = new Database(dbPath);
   sqliteDb.exec(`
     CREATE TABLE IF NOT EXISTS submissions (
@@ -65,12 +66,97 @@ if (usePostgres) {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
   `);
-  console.log(`SQLite database initialized at: ${dbPath}`);
 }
 
-// Unified Database Access Functions
+// -------------------------------------------------------------
+// JSONBin.io Helper Functions
+// -------------------------------------------------------------
+async function ensureJsonBin() {
+  if (JSONBIN_BIN_ID) return JSONBIN_BIN_ID;
+
+  try {
+    console.log('Creating initial JSONBin.io container...');
+    const res = await fetch('https://api.jsonbin.io/v3/b', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Master-Key': JSONBIN_MASTER_KEY,
+        'X-Bin-Name': 'magicpetals_submissions',
+        'X-Bin-Private': 'true'
+      },
+      body: JSON.stringify([])
+    });
+    const data = await res.json();
+    if (data.metadata && data.metadata.id) {
+      JSONBIN_BIN_ID = data.metadata.id;
+      console.log(`JSONBin container created successfully! Bin ID: ${JSONBIN_BIN_ID}`);
+      return JSONBIN_BIN_ID;
+    } else {
+      console.error('Failed to create JSONBin:', data);
+    }
+  } catch (err) {
+    console.error('JSONBin creation error:', err);
+  }
+  return null;
+}
+
+async function fetchJsonBinRecords() {
+  const binId = await ensureJsonBin();
+  if (!binId) return [];
+
+  try {
+    const res = await fetch(`https://api.jsonbin.io/v3/b/${binId}/latest`, {
+      headers: {
+        'X-Master-Key': JSONBIN_MASTER_KEY
+      }
+    });
+    const data = await res.json();
+    return Array.isArray(data.record) ? data.record : [];
+  } catch (err) {
+    console.error('Error fetching JSONBin records:', err);
+    return [];
+  }
+}
+
+async function saveJsonBinRecords(records) {
+  const binId = await ensureJsonBin();
+  if (!binId) return false;
+
+  try {
+    const res = await fetch(`https://api.jsonbin.io/v3/b/${binId}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Master-Key': JSONBIN_MASTER_KEY
+      },
+      body: JSON.stringify(records)
+    });
+    const data = await res.json();
+    return res.ok;
+  } catch (err) {
+    console.error('Error saving to JSONBin:', err);
+    return false;
+  }
+}
+
+// -------------------------------------------------------------
+// Unified Database Operations
+// -------------------------------------------------------------
 async function addSubmission(name, phone, feedback) {
-  if (usePostgres) {
+  if (storageMode === 'jsonbin') {
+    const records = await fetchJsonBinRecords();
+    const newId = records.length > 0 ? Math.max(...records.map(r => r.id || 0)) + 1 : 1;
+    const newRecord = {
+      id: newId,
+      name,
+      phone,
+      feedback,
+      created_at: new Date().toISOString()
+    };
+    records.unshift(newRecord);
+    await saveJsonBinRecords(records);
+    return newId;
+  } else if (storageMode === 'postgres') {
     const res = await pgPool.query(
       'INSERT INTO submissions (name, phone, feedback) VALUES ($1, $2, $3) RETURNING id',
       [name, phone, feedback]
@@ -84,16 +170,43 @@ async function addSubmission(name, phone, feedback) {
 }
 
 async function getSubmissions(search, sort) {
-  let query, params = [];
-  
-  if (usePostgres) {
-    query = 'SELECT id, name, phone, feedback, created_at FROM submissions';
+  if (storageMode === 'jsonbin') {
+    let records = await fetchJsonBinRecords();
+
+    if (search && search.trim()) {
+      const term = search.trim().toLowerCase();
+      records = records.filter(r => 
+        (r.name && r.name.toLowerCase().includes(term)) ||
+        (r.phone && r.phone.toLowerCase().includes(term)) ||
+        (r.feedback && r.feedback.toLowerCase().includes(term))
+      );
+    }
+
+    if (sort === 'oldest') {
+      records.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+    } else {
+      records.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    }
+
+    const todayStr = new Date().toISOString().split('T')[0];
+    const todayCount = records.filter(r => r.created_at && r.created_at.startsWith(todayStr)).length;
+
+    return {
+      records,
+      stats: {
+        total: records.length,
+        today: todayCount
+      }
+    };
+  } else if (storageMode === 'postgres') {
+    let query = 'SELECT id, name, phone, feedback, created_at FROM submissions';
+    let params = [];
     if (search && search.trim()) {
       query += ' WHERE name ILIKE $1 OR phone ILIKE $1 OR feedback ILIKE $1';
       params.push(`%${search.trim()}%`);
     }
     query += sort === 'oldest' ? ' ORDER BY created_at ASC' : ' ORDER BY created_at DESC';
-    
+
     const res = await pgPool.query(query, params);
     const totalRes = await pgPool.query('SELECT COUNT(*) as total FROM submissions');
     const todayRes = await pgPool.query("SELECT COUNT(*) as today FROM submissions WHERE created_at >= CURRENT_DATE");
@@ -106,7 +219,8 @@ async function getSubmissions(search, sort) {
       }
     };
   } else {
-    query = 'SELECT * FROM submissions';
+    let query = 'SELECT * FROM submissions';
+    let params = [];
     if (search && search.trim()) {
       const searchTerm = `%${search.trim()}%`;
       query += ' WHERE name LIKE ? OR phone LIKE ? OR feedback LIKE ?';
@@ -131,22 +245,30 @@ async function getSubmissions(search, sort) {
 }
 
 async function deleteSubmission(id) {
-  if (usePostgres) {
-    const res = await pgPool.query('DELETE FROM submissions WHERE id = $1', [id]);
+  const targetId = parseInt(id, 10);
+  if (storageMode === 'jsonbin') {
+    let records = await fetchJsonBinRecords();
+    const initialLen = records.length;
+    records = records.filter(r => r.id !== targetId);
+    if (records.length < initialLen) {
+      await saveJsonBinRecords(records);
+      return true;
+    }
+    return false;
+  } else if (storageMode === 'postgres') {
+    const res = await pgPool.query('DELETE FROM submissions WHERE id = $1', [targetId]);
     return res.rowCount > 0;
   } else {
     const stmt = sqliteDb.prepare('DELETE FROM submissions WHERE id = ?');
-    const result = stmt.run(id);
+    const result = stmt.run(targetId);
     return result.changes > 0;
   }
 }
 
-// Middleware to protect admin routes
+// Admin Token Middleware
 function verifyAdminToken(req, res, next) {
   let token = req.headers.authorization ? req.headers.authorization.split(' ')[1] : null;
-  if (!token && req.query.token) {
-    token = req.query.token;
-  }
+  if (!token && req.query.token) token = req.query.token;
 
   if (!token) {
     return res.status(401).json({ success: false, message: 'Access denied. Authorization token missing.' });
@@ -168,33 +290,22 @@ function verifyAdminToken(req, res, next) {
 // PUBLIC API ENDPOINTS
 // -------------------------------------------------------------
 
-// Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     store: 'Magic Petals - Pets Food & Stationery',
-    dbEngine: usePostgres ? 'PostgreSQL' : 'SQLite',
+    engine: storageMode,
     timestamp: new Date().toISOString()
   });
 });
 
-// Submit Customer Intake / Feedback Form
 app.post('/api/submissions', async (req, res) => {
   try {
     const { name, phone, feedback } = req.body;
+    if (!name || !name.trim()) return res.status(400).json({ success: false, message: 'Name is required.' });
+    if (!phone || !phone.trim()) return res.status(400).json({ success: false, message: 'Phone number is required.' });
 
-    if (!name || !name.trim()) {
-      return res.status(400).json({ success: false, message: 'Name is required.' });
-    }
-    if (!phone || !phone.trim()) {
-      return res.status(400).json({ success: false, message: 'Phone number is required.' });
-    }
-
-    const cleanName = name.trim();
-    const cleanPhone = phone.trim();
-    const cleanFeedback = feedback ? feedback.trim() : '';
-
-    const id = await addSubmission(cleanName, cleanPhone, cleanFeedback);
+    const id = await addSubmission(name.trim(), phone.trim(), feedback ? feedback.trim() : '');
 
     res.status(201).json({
       success: true,
@@ -211,50 +322,33 @@ app.post('/api/submissions', async (req, res) => {
 // ADMIN API ENDPOINTS
 // -------------------------------------------------------------
 
-// Admin Login
 app.post('/api/admin/login', (req, res) => {
   const { username, password } = req.body;
-
-  if (!username || !password) {
-    return res.status(400).json({ success: false, message: 'Username and password required.' });
-  }
+  if (!username || !password) return res.status(400).json({ success: false, message: 'Username and password required.' });
 
   if (username.trim() === ADMIN_USER && password === ADMIN_PASS) {
     const token = jwt.sign({ username: ADMIN_USER }, JWT_SECRET, { expiresIn: '24h' });
-    return res.json({
-      success: true,
-      message: 'Login successful!',
-      token,
-      user: { username: ADMIN_USER }
-    });
+    return res.json({ success: true, message: 'Login successful!', token, user: { username: ADMIN_USER } });
   } else {
     return res.status(401).json({ success: false, message: 'Invalid username or password.' });
   }
 });
 
-// Get all submissions (Admin Only)
 app.get('/api/admin/submissions', verifyAdminToken, async (req, res) => {
   try {
     const { search, sort } = req.query;
     const { records, stats } = await getSubmissions(search, sort);
-
-    res.json({
-      success: true,
-      data: records,
-      stats
-    });
+    res.json({ success: true, data: records, stats });
   } catch (error) {
     console.error('Error fetching submissions:', error);
     res.status(500).json({ success: false, message: 'Error retrieving submissions.' });
   }
 });
 
-// Delete a submission (Admin Only)
 app.delete('/api/admin/submissions/:id', verifyAdminToken, async (req, res) => {
   try {
     const { id } = req.params;
     const deleted = await deleteSubmission(id);
-
     if (deleted) {
       res.json({ success: true, message: 'Submission deleted successfully.' });
     } else {
@@ -266,12 +360,9 @@ app.delete('/api/admin/submissions/:id', verifyAdminToken, async (req, res) => {
   }
 });
 
-// Download details as CSV (Admin Only)
 app.get('/api/admin/export', verifyAdminToken, async (req, res) => {
   try {
     const { records } = await getSubmissions('', 'newest');
-
-    // Generate CSV Content
     let csv = 'ID,Name,Phone Number,Feedback / Message,Date & Time\n';
 
     records.forEach(row => {
@@ -293,22 +384,11 @@ app.get('/api/admin/export', verifyAdminToken, async (req, res) => {
 });
 
 // HTML page routing fallbacks
-app.get('/scanner', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'scanner.html'));
-});
-
-app.get('/admin', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'admin.html'));
-});
-
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
+app.get('/scanner', (req, res) => res.sendFile(path.join(__dirname, 'public', 'scanner.html')));
+app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'public', 'admin.html')));
+app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
 // Start Server
 app.listen(PORT, () => {
   console.log(`🌸 Magic Petals App is running on http://localhost:${PORT}`);
-  console.log(`📱 Customer Form: http://localhost:${PORT}/`);
-  console.log(`📷 Front Scanner: http://localhost:${PORT}/scanner`);
-  console.log(`🔐 Admin Panel: http://localhost:${PORT}/admin`);
 });
