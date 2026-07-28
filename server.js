@@ -19,22 +19,38 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // -------------------------------------------------------------
-// TRIPLE DATABASE ADAPTER (JSONBin Cloud JSON, PostgreSQL, SQLite)
+// BULLETPROOF IN-MEMORY + CLOUD SYNC STORAGE ENGINE
 // -------------------------------------------------------------
 const JSONBIN_MASTER_KEY = process.env.JSONBIN_MASTER_KEY;
 let JSONBIN_BIN_ID = process.env.JSONBIN_BIN_ID;
 const DATABASE_URL = process.env.DATABASE_URL;
 
-let storageMode = 'sqlite';
+let memorySubmissions = []; // In-memory fast cache
+let storageEngine = 'memory_local';
 let pgPool = null;
-let sqliteDb = null;
+
+// Local JSON File Backup path
+const localJsonPath = path.join(__dirname, 'submissions_backup.json');
+
+// Initialize local JSON backup if exists
+if (fs.existsSync(localJsonPath)) {
+  try {
+    const raw = fs.readFileSync(localJsonPath, 'utf8');
+    memorySubmissions = JSON.parse(raw);
+    console.log(`Loaded ${memorySubmissions.length} records from local JSON backup.`);
+  } catch (e) {
+    console.error('Error reading local JSON backup:', e);
+  }
+}
 
 if (JSONBIN_MASTER_KEY) {
-  storageMode = 'jsonbin';
-  console.log('☁️ Storage Engine: JSONBin.io Cloud JSON');
+  storageEngine = 'jsonbin';
+  console.log('☁️ Active Storage Engine: JSONBin.io Cloud Storage');
+  // Initial sync from JSONBin
+  syncFromJSONBin();
 } else if (DATABASE_URL) {
-  storageMode = 'postgres';
-  console.log('🐘 Storage Engine: PostgreSQL');
+  storageEngine = 'postgres';
+  console.log('🐘 Active Storage Engine: PostgreSQL');
   const { Pool } = require('pg');
   pgPool = new Pool({
     connectionString: DATABASE_URL,
@@ -48,34 +64,20 @@ if (JSONBIN_MASTER_KEY) {
       feedback TEXT,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
-  `).catch(err => console.error('Postgres init error:', err));
+  `).then(() => syncFromPostgres())
+    .catch(err => console.error('Postgres init error:', err));
 } else {
-  storageMode = 'sqlite';
-  console.log('📁 Storage Engine: Local SQLite');
-  const Database = require('better-sqlite3');
-  const dbPath = process.env.DB_PATH || path.join(__dirname, 'database.db');
-  const dbDir = path.dirname(dbPath);
-  if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
-  sqliteDb = new Database(dbPath);
-  sqliteDb.exec(`
-    CREATE TABLE IF NOT EXISTS submissions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      phone TEXT NOT NULL,
-      feedback TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
+  console.log('💡 Active Storage Engine: In-Memory + Local JSON Backup');
 }
 
 // -------------------------------------------------------------
-// JSONBin.io Helper Functions
+// JSONBin.io Operations
 // -------------------------------------------------------------
-async function ensureJsonBin() {
+async function ensureJsonBinContainer() {
   if (JSONBIN_BIN_ID) return JSONBIN_BIN_ID;
+  if (!JSONBIN_MASTER_KEY) return null;
 
   try {
-    console.log('Creating initial JSONBin.io container...');
     const res = await fetch('https://api.jsonbin.io/v3/b', {
       method: 'POST',
       headers: {
@@ -84,188 +86,165 @@ async function ensureJsonBin() {
         'X-Bin-Name': 'magicpetals_submissions',
         'X-Bin-Private': 'true'
       },
-      body: JSON.stringify([])
+      body: JSON.stringify(memorySubmissions)
     });
     const data = await res.json();
     if (data.metadata && data.metadata.id) {
       JSONBIN_BIN_ID = data.metadata.id;
-      console.log(`JSONBin container created successfully! Bin ID: ${JSONBIN_BIN_ID}`);
+      console.log(`Created new JSONBin Container: ${JSONBIN_BIN_ID}`);
       return JSONBIN_BIN_ID;
-    } else {
-      console.error('Failed to create JSONBin:', data);
     }
   } catch (err) {
-    console.error('JSONBin creation error:', err);
+    console.error('Failed to create JSONBin container:', err);
   }
   return null;
 }
 
-async function fetchJsonBinRecords() {
-  const binId = await ensureJsonBin();
-  if (!binId) return [];
-
+async function syncFromJSONBin() {
+  if (!JSONBIN_MASTER_KEY) return;
   try {
+    const binId = await ensureJsonBinContainer();
+    if (!binId) return;
+
     const res = await fetch(`https://api.jsonbin.io/v3/b/${binId}/latest`, {
-      headers: {
-        'X-Master-Key': JSONBIN_MASTER_KEY
-      }
+      headers: { 'X-Master-Key': JSONBIN_MASTER_KEY }
     });
     const data = await res.json();
-    return Array.isArray(data.record) ? data.record : [];
+    if (Array.isArray(data.record)) {
+      memorySubmissions = data.record;
+      console.log(`Synced ${memorySubmissions.length} records from JSONBin.io`);
+      saveLocalJsonBackup();
+    }
   } catch (err) {
-    console.error('Error fetching JSONBin records:', err);
-    return [];
+    console.error('JSONBin sync error:', err);
   }
 }
 
-async function saveJsonBinRecords(records) {
-  const binId = await ensureJsonBin();
-  if (!binId) return false;
-
+async function syncToJSONBin() {
+  if (!JSONBIN_MASTER_KEY) return;
   try {
-    const res = await fetch(`https://api.jsonbin.io/v3/b/${binId}`, {
+    const binId = await ensureJsonBinContainer();
+    if (!binId) return;
+
+    await fetch(`https://api.jsonbin.io/v3/b/${binId}`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
         'X-Master-Key': JSONBIN_MASTER_KEY
       },
-      body: JSON.stringify(records)
+      body: JSON.stringify(memorySubmissions)
     });
-    const data = await res.json();
-    return res.ok;
+    console.log('Saved records to JSONBin.io cloud.');
   } catch (err) {
-    console.error('Error saving to JSONBin:', err);
-    return false;
+    console.error('Failed pushing to JSONBin:', err);
   }
 }
 
 // -------------------------------------------------------------
-// Unified Database Operations
+// PostgreSQL Operations
+// -------------------------------------------------------------
+async function syncFromPostgres() {
+  try {
+    const res = await pgPool.query('SELECT id, name, phone, feedback, created_at FROM submissions ORDER BY id DESC');
+    memorySubmissions = res.rows;
+    console.log(`Synced ${memorySubmissions.length} records from PostgreSQL.`);
+    saveLocalJsonBackup();
+  } catch (err) {
+    console.error('Postgres sync error:', err);
+  }
+}
+
+function saveLocalJsonBackup() {
+  try {
+    fs.writeFileSync(localJsonPath, JSON.stringify(memorySubmissions, null, 2), 'utf8');
+  } catch (e) {
+    console.error('Error writing local JSON backup:', e);
+  }
+}
+
+// -------------------------------------------------------------
+// Core Business Operations (Memory First + Background Cloud Sync)
 // -------------------------------------------------------------
 async function addSubmission(name, phone, feedback) {
-  if (storageMode === 'jsonbin') {
-    const records = await fetchJsonBinRecords();
-    const newId = records.length > 0 ? Math.max(...records.map(r => r.id || 0)) + 1 : 1;
-    const newRecord = {
-      id: newId,
-      name,
-      phone,
-      feedback,
-      created_at: new Date().toISOString()
-    };
-    records.unshift(newRecord);
-    await saveJsonBinRecords(records);
-    return newId;
-  } else if (storageMode === 'postgres') {
-    const res = await pgPool.query(
-      'INSERT INTO submissions (name, phone, feedback) VALUES ($1, $2, $3) RETURNING id',
-      [name, phone, feedback]
-    );
-    return res.rows[0].id;
-  } else {
-    const stmt = sqliteDb.prepare('INSERT INTO submissions (name, phone, feedback) VALUES (?, ?, ?)');
-    const info = stmt.run(name, phone, feedback);
-    return info.lastInsertRowid;
+  const newId = memorySubmissions.length > 0 
+    ? Math.max(...memorySubmissions.map(r => Number(r.id) || 0)) + 1 
+    : 1;
+
+  const nowISO = new Date().toISOString();
+  const record = {
+    id: newId,
+    name: name.trim(),
+    phone: phone.trim(),
+    feedback: feedback ? feedback.trim() : '',
+    created_at: nowISO
+  };
+
+  // 1. Immediately insert into memory array so Admin sees it in 0ms
+  memorySubmissions.unshift(record);
+  saveLocalJsonBackup();
+
+  // 2. Sync to cloud database asynchronously
+  if (storageEngine === 'jsonbin') {
+    syncToJSONBin();
+  } else if (storageEngine === 'postgres' && pgPool) {
+    pgPool.query(
+      'INSERT INTO submissions (name, phone, feedback) VALUES ($1, $2, $3)',
+      [record.name, record.phone, record.feedback]
+    ).catch(err => console.error('Postgres insert error:', err));
   }
+
+  return newId;
 }
 
-async function getSubmissions(search, sort) {
-  if (storageMode === 'jsonbin') {
-    let records = await fetchJsonBinRecords();
+function getSubmissions(search, sort) {
+  let records = [...memorySubmissions];
 
-    if (search && search.trim()) {
-      const term = search.trim().toLowerCase();
-      records = records.filter(r => 
-        (r.name && r.name.toLowerCase().includes(term)) ||
-        (r.phone && r.phone.toLowerCase().includes(term)) ||
-        (r.feedback && r.feedback.toLowerCase().includes(term))
-      );
-    }
-
-    if (sort === 'oldest') {
-      records.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-    } else {
-      records.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-    }
-
-    const todayStr = new Date().toISOString().split('T')[0];
-    const todayCount = records.filter(r => r.created_at && r.created_at.startsWith(todayStr)).length;
-
-    return {
-      records,
-      stats: {
-        total: records.length,
-        today: todayCount
-      }
-    };
-  } else if (storageMode === 'postgres') {
-    let query = 'SELECT id, name, phone, feedback, created_at FROM submissions';
-    let params = [];
-    if (search && search.trim()) {
-      query += ' WHERE name ILIKE $1 OR phone ILIKE $1 OR feedback ILIKE $1';
-      params.push(`%${search.trim()}%`);
-    }
-    query += sort === 'oldest' ? ' ORDER BY created_at ASC' : ' ORDER BY created_at DESC';
-
-    const res = await pgPool.query(query, params);
-    const totalRes = await pgPool.query('SELECT COUNT(*) as total FROM submissions');
-    const todayRes = await pgPool.query("SELECT COUNT(*) as today FROM submissions WHERE created_at >= CURRENT_DATE");
-
-    return {
-      records: res.rows,
-      stats: {
-        total: parseInt(totalRes.rows[0].total, 10),
-        today: parseInt(todayRes.rows[0].today, 10)
-      }
-    };
-  } else {
-    let query = 'SELECT * FROM submissions';
-    let params = [];
-    if (search && search.trim()) {
-      const searchTerm = `%${search.trim()}%`;
-      query += ' WHERE name LIKE ? OR phone LIKE ? OR feedback LIKE ?';
-      params.push(searchTerm, searchTerm, searchTerm);
-    }
-    query += sort === 'oldest' ? ' ORDER BY created_at ASC' : ' ORDER BY created_at DESC';
-
-    const stmt = sqliteDb.prepare(query);
-    const records = stmt.all(...params);
-
-    const totalCount = sqliteDb.prepare('SELECT COUNT(*) as total FROM submissions').get().total;
-    const todayCount = sqliteDb.prepare("SELECT COUNT(*) as today FROM submissions WHERE date(created_at, 'localtime') = date('now', 'localtime')").get().today;
-
-    return {
-      records,
-      stats: {
-        total: totalCount,
-        today: todayCount
-      }
-    };
+  if (search && search.trim()) {
+    const term = search.trim().toLowerCase();
+    records = records.filter(r => 
+      (r.name && r.name.toLowerCase().includes(term)) ||
+      (r.phone && r.phone.toLowerCase().includes(term)) ||
+      (r.feedback && r.feedback.toLowerCase().includes(term))
+    );
   }
+
+  if (sort === 'oldest') {
+    records.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+  } else {
+    records.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  }
+
+  const todayStr = new Date().toISOString().split('T')[0];
+  const todayCount = records.filter(r => r.created_at && r.created_at.startsWith(todayStr)).length;
+
+  return {
+    records,
+    stats: {
+      total: records.length,
+      today: todayCount
+    }
+  };
 }
 
 async function deleteSubmission(id) {
-  const targetId = parseInt(id, 10);
-  if (storageMode === 'jsonbin') {
-    let records = await fetchJsonBinRecords();
-    const initialLen = records.length;
-    records = records.filter(r => r.id !== targetId);
-    if (records.length < initialLen) {
-      await saveJsonBinRecords(records);
-      return true;
+  const targetId = Number(id);
+  const initialLen = memorySubmissions.length;
+  memorySubmissions = memorySubmissions.filter(r => Number(r.id) !== targetId);
+  
+  if (memorySubmissions.length < initialLen) {
+    saveLocalJsonBackup();
+    if (storageEngine === 'jsonbin') {
+      syncToJSONBin();
+    } else if (storageEngine === 'postgres' && pgPool) {
+      pgPool.query('DELETE FROM submissions WHERE id = $1', [targetId])
+        .catch(err => console.error('Postgres delete error:', err));
     }
-    return false;
-  } else if (storageMode === 'postgres') {
-    const res = await pgPool.query('DELETE FROM submissions WHERE id = $1', [targetId]);
-    return res.rowCount > 0;
-  } else {
-    const stmt = sqliteDb.prepare('DELETE FROM submissions WHERE id = ?');
-    const result = stmt.run(targetId);
-    return result.changes > 0;
+    return true;
   }
+  return false;
 }
 
-// Admin Token Middleware
+// Token Verification Middleware
 function verifyAdminToken(req, res, next) {
   let token = req.headers.authorization ? req.headers.authorization.split(' ')[1] : null;
   if (!token && req.query.token) token = req.query.token;
@@ -294,7 +273,9 @@ app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     store: 'Magic Petals - Pets Food & Stationery',
-    engine: storageMode,
+    engine: storageEngine,
+    jsonbinKeyConfigured: !!JSONBIN_MASTER_KEY,
+    totalRecordsInMemory: memorySubmissions.length,
     timestamp: new Date().toISOString()
   });
 });
@@ -334,10 +315,10 @@ app.post('/api/admin/login', (req, res) => {
   }
 });
 
-app.get('/api/admin/submissions', verifyAdminToken, async (req, res) => {
+app.get('/api/admin/submissions', verifyAdminToken, (req, res) => {
   try {
     const { search, sort } = req.query;
-    const { records, stats } = await getSubmissions(search, sort);
+    const { records, stats } = getSubmissions(search, sort);
     res.json({ success: true, data: records, stats });
   } catch (error) {
     console.error('Error fetching submissions:', error);
@@ -360,9 +341,9 @@ app.delete('/api/admin/submissions/:id', verifyAdminToken, async (req, res) => {
   }
 });
 
-app.get('/api/admin/export', verifyAdminToken, async (req, res) => {
+app.get('/api/admin/export', verifyAdminToken, (req, res) => {
   try {
-    const { records } = await getSubmissions('', 'newest');
+    const { records } = getSubmissions('', 'newest');
     let csv = 'ID,Name,Phone Number,Feedback / Message,Date & Time\n';
 
     records.forEach(row => {
