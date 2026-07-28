@@ -1,8 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const fs = require('fs');
 const jwt = require('jsonwebtoken');
-const Database = require('better-sqlite3');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -18,21 +18,128 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Database setup (creates database.db in project root)
-const db = new Database(path.join(__dirname, 'database.db'));
+// -------------------------------------------------------------
+// DATABASE DUAL ADAPTER (PostgreSQL on Render OR SQLite local/persistent)
+// -------------------------------------------------------------
+let usePostgres = !!process.env.DATABASE_URL;
+let pgPool = null;
+let sqliteDb = null;
 
-// Initialize Database schema
-db.exec(`
-  CREATE TABLE IF NOT EXISTS submissions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    phone TEXT NOT NULL,
-    feedback TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-`);
+if (usePostgres) {
+  console.log('🐘 Connecting to PostgreSQL database...');
+  const { Pool } = require('pg');
+  pgPool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false }
+  });
 
-console.log('Database initialized successfully.');
+  // Init Postgres Table
+  pgPool.query(`
+    CREATE TABLE IF NOT EXISTS submissions (
+      id SERIAL PRIMARY KEY,
+      name VARCHAR(255) NOT NULL,
+      phone VARCHAR(255) NOT NULL,
+      feedback TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `).then(() => console.log('PostgreSQL database initialized successfully.'))
+    .catch(err => console.error('PostgreSQL init error:', err));
+} else {
+  console.log('📁 Connecting to SQLite database...');
+  const Database = require('better-sqlite3');
+  const dbPath = process.env.DB_PATH || path.join(__dirname, 'database.db');
+  
+  // Ensure directory exists if custom path provided
+  const dbDir = path.dirname(dbPath);
+  if (!fs.existsSync(dbDir)) {
+    fs.mkdirSync(dbDir, { recursive: true });
+  }
+
+  sqliteDb = new Database(dbPath);
+  sqliteDb.exec(`
+    CREATE TABLE IF NOT EXISTS submissions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      phone TEXT NOT NULL,
+      feedback TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  console.log(`SQLite database initialized at: ${dbPath}`);
+}
+
+// Unified Database Access Functions
+async function addSubmission(name, phone, feedback) {
+  if (usePostgres) {
+    const res = await pgPool.query(
+      'INSERT INTO submissions (name, phone, feedback) VALUES ($1, $2, $3) RETURNING id',
+      [name, phone, feedback]
+    );
+    return res.rows[0].id;
+  } else {
+    const stmt = sqliteDb.prepare('INSERT INTO submissions (name, phone, feedback) VALUES (?, ?, ?)');
+    const info = stmt.run(name, phone, feedback);
+    return info.lastInsertRowid;
+  }
+}
+
+async function getSubmissions(search, sort) {
+  let query, params = [];
+  
+  if (usePostgres) {
+    query = 'SELECT id, name, phone, feedback, created_at FROM submissions';
+    if (search && search.trim()) {
+      query += ' WHERE name ILIKE $1 OR phone ILIKE $1 OR feedback ILIKE $1';
+      params.push(`%${search.trim()}%`);
+    }
+    query += sort === 'oldest' ? ' ORDER BY created_at ASC' : ' ORDER BY created_at DESC';
+    
+    const res = await pgPool.query(query, params);
+    const totalRes = await pgPool.query('SELECT COUNT(*) as total FROM submissions');
+    const todayRes = await pgPool.query("SELECT COUNT(*) as today FROM submissions WHERE created_at >= CURRENT_DATE");
+
+    return {
+      records: res.rows,
+      stats: {
+        total: parseInt(totalRes.rows[0].total, 10),
+        today: parseInt(todayRes.rows[0].today, 10)
+      }
+    };
+  } else {
+    query = 'SELECT * FROM submissions';
+    if (search && search.trim()) {
+      const searchTerm = `%${search.trim()}%`;
+      query += ' WHERE name LIKE ? OR phone LIKE ? OR feedback LIKE ?';
+      params.push(searchTerm, searchTerm, searchTerm);
+    }
+    query += sort === 'oldest' ? ' ORDER BY created_at ASC' : ' ORDER BY created_at DESC';
+
+    const stmt = sqliteDb.prepare(query);
+    const records = stmt.all(...params);
+
+    const totalCount = sqliteDb.prepare('SELECT COUNT(*) as total FROM submissions').get().total;
+    const todayCount = sqliteDb.prepare("SELECT COUNT(*) as today FROM submissions WHERE date(created_at, 'localtime') = date('now', 'localtime')").get().today;
+
+    return {
+      records,
+      stats: {
+        total: totalCount,
+        today: todayCount
+      }
+    };
+  }
+}
+
+async function deleteSubmission(id) {
+  if (usePostgres) {
+    const res = await pgPool.query('DELETE FROM submissions WHERE id = $1', [id]);
+    return res.rowCount > 0;
+  } else {
+    const stmt = sqliteDb.prepare('DELETE FROM submissions WHERE id = ?');
+    const result = stmt.run(id);
+    return result.changes > 0;
+  }
+}
 
 // Middleware to protect admin routes
 function verifyAdminToken(req, res, next) {
@@ -66,12 +173,13 @@ app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     store: 'Magic Petals - Pets Food & Stationery',
+    dbEngine: usePostgres ? 'PostgreSQL' : 'SQLite',
     timestamp: new Date().toISOString()
   });
 });
 
 // Submit Customer Intake / Feedback Form
-app.post('/api/submissions', (req, res) => {
+app.post('/api/submissions', async (req, res) => {
   try {
     const { name, phone, feedback } = req.body;
 
@@ -86,13 +194,12 @@ app.post('/api/submissions', (req, res) => {
     const cleanPhone = phone.trim();
     const cleanFeedback = feedback ? feedback.trim() : '';
 
-    const stmt = db.prepare('INSERT INTO submissions (name, phone, feedback) VALUES (?, ?, ?)');
-    const info = stmt.run(cleanName, cleanPhone, cleanFeedback);
+    const id = await addSubmission(cleanName, cleanPhone, cleanFeedback);
 
     res.status(201).json({
       success: true,
       message: 'Thank you! Your details have been submitted to Magic Petals.',
-      id: info.lastInsertRowid
+      id
     });
   } catch (error) {
     console.error('Error saving submission:', error);
@@ -126,41 +233,15 @@ app.post('/api/admin/login', (req, res) => {
 });
 
 // Get all submissions (Admin Only)
-app.get('/api/admin/submissions', verifyAdminToken, (req, res) => {
+app.get('/api/admin/submissions', verifyAdminToken, async (req, res) => {
   try {
     const { search, sort } = req.query;
-    let query = 'SELECT * FROM submissions';
-    let params = [];
-
-    if (search && search.trim()) {
-      const searchTerm = `%${search.trim()}%`;
-      query += ' WHERE name LIKE ? OR phone LIKE ? OR feedback LIKE ?';
-      params.push(searchTerm, searchTerm, searchTerm);
-    }
-
-    if (sort === 'oldest') {
-      query += ' ORDER BY created_at ASC';
-    } else {
-      query += ' ORDER BY created_at DESC';
-    }
-
-    const stmt = db.prepare(query);
-    const records = stmt.all(...params);
-
-    // Get analytics stats
-    const totalStmt = db.prepare('SELECT COUNT(*) as total FROM submissions');
-    const totalCount = totalStmt.get().total;
-
-    const todayStmt = db.prepare("SELECT COUNT(*) as today FROM submissions WHERE date(created_at, 'localtime') = date('now', 'localtime')");
-    const todayCount = todayStmt.get().today;
+    const { records, stats } = await getSubmissions(search, sort);
 
     res.json({
       success: true,
       data: records,
-      stats: {
-        total: totalCount,
-        today: todayCount
-      }
+      stats
     });
   } catch (error) {
     console.error('Error fetching submissions:', error);
@@ -169,13 +250,12 @@ app.get('/api/admin/submissions', verifyAdminToken, (req, res) => {
 });
 
 // Delete a submission (Admin Only)
-app.delete('/api/admin/submissions/:id', verifyAdminToken, (req, res) => {
+app.delete('/api/admin/submissions/:id', verifyAdminToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const stmt = db.prepare('DELETE FROM submissions WHERE id = ?');
-    const result = stmt.run(id);
+    const deleted = await deleteSubmission(id);
 
-    if (result.changes > 0) {
+    if (deleted) {
       res.json({ success: true, message: 'Submission deleted successfully.' });
     } else {
       res.status(404).json({ success: false, message: 'Record not found.' });
@@ -187,20 +267,18 @@ app.delete('/api/admin/submissions/:id', verifyAdminToken, (req, res) => {
 });
 
 // Download details as CSV (Admin Only)
-app.get('/api/admin/export', verifyAdminToken, (req, res) => {
+app.get('/api/admin/export', verifyAdminToken, async (req, res) => {
   try {
-    const stmt = db.prepare('SELECT id, name, phone, feedback, created_at FROM submissions ORDER BY created_at DESC');
-    const records = stmt.all();
+    const { records } = await getSubmissions('', 'newest');
 
     // Generate CSV Content
     let csv = 'ID,Name,Phone Number,Feedback / Message,Date & Time\n';
 
     records.forEach(row => {
-      // Escape double quotes in CSV values
       const name = `"${(row.name || '').replace(/"/g, '""')}"`;
       const phone = `"${(row.phone || '').replace(/"/g, '""')}"`;
       const feedback = `"${(row.feedback || '').replace(/"/g, '""')}"`;
-      const createdAt = `"${(row.created_at || '').replace(/"/g, '""')}"`;
+      const createdAt = `"${(new Date(row.created_at).toISOString() || '').replace(/"/g, '""')}"`;
 
       csv += `${row.id},${name},${phone},${feedback},${createdAt}\n`;
     });
